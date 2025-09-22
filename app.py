@@ -1,6 +1,12 @@
 
 import re
 import streamlit as st
+from PIL import Image
+import pytesseract
+
+# Point pytesseract to the Tesseract executable path if not in system PATH
+# For Windows, uncomment and modify the line below if Tesseract isn't found
+# pytesseract.pytesseract.tesseract_cmd = r'<path_to_your_tesseract_executable>'
 
 def generate_sales_notification(ocr_text: str) -> str:
     """
@@ -20,18 +26,6 @@ def generate_sales_notification(ocr_text: str) -> str:
     room_details = []  # Stores (number_of_rooms, room_type, price)
 
     # --- Step 1: Extract basic information (team name, arrival/departure dates) ---
-    found_team_name = False
-    found_arrival_date = False
-    found_departure_date = False
-
-    # Process the entire OCR text to find all relevant information.
-    # It's better to use specific markers or patterns to extract data reliably.
-    # For this specific example, let's assume the first line with CON/FIT/WA is the team name
-    # and dates appear after that.
-
-    # Simplified extraction based on typical OCR output structure.
-    # This part might need refinement based on the exact OCR output variations.
-    
     # Find team name
     for line in lines:
         match = re.search(r'(CON|FIT|WA)\d+/[^\s]+', line)
@@ -97,8 +91,6 @@ def generate_sales_notification(ocr_text: str) -> str:
             room_string = "，".join(formatted_rooms[:-1]) + "，以及" + formatted_rooms[-1]
     
     # --- Step 6: Construct the final speech ---
-    # Reformat arrival and departure dates to only show MM月DD日 if needed, based on previous examples
-    # The example output was "12月19日-12月21日", so let's adapt.
     formatted_arrival = f"{int(arrival_date.split('/')[0])}月{int(arrival_date.split('/')[1])}日" if arrival_date else ""
     formatted_departure = f"{int(departure_date.split('/')[0])}月{int(departure_date.split('/')[1])}日" if departure_date else ""
     date_range_string = f"{formatted_arrival}-{formatted_departure}" if formatted_arrival and formatted_departure else ""
@@ -111,16 +103,22 @@ def generate_sales_notification(ocr_text: str) -> str:
 st.set_page_config(layout="wide")
 st.title("📑 OCR 销售通知生成器")
 st.markdown("""
-通过上传包含团队预订信息的 OCR 文本，自动生成格式化的销售通知话术。
+通过上传包含团队预订信息的图片，自动识别文本并生成格式化的销售通知话术。
 支持根据团队名称前缀自动识别团队类型（CON-会议团, FIT-散客团, WA-婚宴团, 其他默认为旅游团），
 并按房间数量从小到大排序房间详情。
 """)
 
-uploaded_file = st.file_uploader("上传 OCR 文本文件 (.txt)", type=["txt"])
+uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg"])
 
 if uploaded_file is not None:
-    ocr_text = uploaded_file.read().decode("utf-8")
-    st.subheader("原始 OCR 文本:")
+    image = Image.open(uploaded_file)
+    st.subheader("原始图片:")
+    st.image(image, caption="上传的图片", use_column_width=True)
+
+    # Perform OCR
+    ocr_text = pytesseract.image_to_string(image, lang='chi_sim') # 'chi_sim' for simplified Chinese
+    
+    st.subheader("OCR 识别出的文本:")
     st.text_area("OCR 内容", ocr_text, height=300)
 
     if st.button("生成销售通知"):
@@ -129,6 +127,6 @@ if uploaded_file is not None:
             st.subheader("生成的销售通知:")
             st.success(generated_speech)
         else:
-            st.warning("OCR 文本内容为空，请检查上传的文件。")
+            st.warning("OCR 识别文本内容为空，请检查图片质量或尝试手动输入。")
 else:
-    st.info("请上传一个 OCR 文本文件 (.txt) 来开始。")
+    st.info("请上传一个图片文件来开始。")
