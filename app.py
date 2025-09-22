@@ -34,27 +34,36 @@ def generate_sales_notification(ocr_text: str) -> str:
             team_name_found_idx = idx
             break
 
+    arrival_date = ""
+    departure_date = ""
+    
     # Search for arrival and departure dates starting from the line where team_name was found, or from the beginning
     search_start_line_for_dates = team_name_found_idx if team_name_found_idx != -1 else 0
     
+    dates_mm_dd_only = []
     for i in range(search_start_line_for_dates, len(lines)):
         line = lines[i]
-        # Find all date-time patterns on the line (e.g., 12/19 18:00)
-        all_date_time_matches = re.findall(r'(\d{2}/\d{2})\s+\d{2}:\d{2}', line)
-        if len(all_date_time_matches) >= 2:
-            arrival_date = all_date_time_matches[0] # Get the MM/DD part
-            departure_date = all_date_time_matches[1] # Get the MM/DD part
-            break # Found the group dates, stop searching
+        # Find all MM/DD patterns (e.g., 12/19) without requiring HH:MM
+        all_mm_dd_matches = re.findall(r'(\d{2}/\d{2})', line)
+        dates_mm_dd_only.extend(all_mm_dd_matches)
+        # Collect up to 2 unique dates to avoid duplicates if dates appear multiple times on different lines
+        dates_mm_dd_only = list(dict.fromkeys(dates_mm_dd_only)) # Remove duplicates while preserving order
+        if len(dates_mm_dd_only) >= 2:
+            break
 
-    # If only one date is found, assume departure is the same as arrival (addresses 12月19日-12月19日 issue)
-    if arrival_date and not departure_date:
-        departure_date = arrival_date
+    if len(dates_mm_dd_only) >= 2:
+        arrival_date = dates_mm_dd_only[0]
+        departure_date = dates_mm_dd_only[1]
+    elif len(dates_mm_dd_only) == 1:
+        arrival_date = dates_mm_dd_only[0]
+        departure_date = dates_mm_dd_only[0] # Fallback for single date found
 
     # --- Step 2: Extract all detailed room entries ---
     for i, line in enumerate(lines):
         # Use re.search and more flexible whitespace
         # Room type and number (e.g., "STS 32", "JKN 50")
         # Use negative lookahead to ensure the number is not part of a date/time/price (e.g., 1 from 12/19 1)
+        # This regex requires a digit for the room count. If OCR output is non-digit (like '于'), it will not match.
         match_room_and_count = re.search(r'([A-Z]{3,4})\s*(\d+)\s*(?![:/.])', line)
 
         if match_room_and_count:
