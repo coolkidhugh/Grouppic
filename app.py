@@ -113,7 +113,7 @@ uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.subheader("原始图片:")
-    st.image(image, caption="上传的图片", use_column_width=True)
+    st.image(image, caption="上传的图片", use_container_width=True)
 
     # Perform OCR
     ocr_text = pytesseract.image_to_string(image, lang='chi_sim') # 'chi_sim' for simplified Chinese
