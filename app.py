@@ -26,45 +26,63 @@ def generate_sales_notification(ocr_text: str) -> str:
     room_details = []  # Stores (number_of_rooms, room_type, price)
 
     # --- Step 1: Extract basic information (team name, arrival/departure dates) ---
-    # Find team name
-    for line in lines:
+    team_name_found_idx = -1
+    for idx, line in enumerate(lines):
         match = re.search(r'(CON|FIT|WA)\d+/[^\s]+', line)
         if match:
             team_name = match.group(0)
+            team_name_found_idx = idx
             break
 
-    # Find arrival and departure dates
-    dates = []
-    for line in lines:
-        match_date = re.search(r'(\d{2}/\d{2})\s+\d{2}:\d{2}', line)
-        if match_date:
-            dates.append(match_date.group(1))
+    # Search for arrival and departure dates starting from the line where team_name was found, or from the beginning
+    search_start_line_for_dates = team_name_found_idx if team_name_found_idx != -1 else 0
     
-    if len(dates) >= 2:
-        arrival_date = dates[0]
-        departure_date = dates[1]
+    for i in range(search_start_line_for_dates, len(lines)):
+        line = lines[i]
+        # Find all date-time patterns on the line (e.g., 12/19 18:00)
+        all_date_time_matches = re.findall(r'(\d{2}/\d{2})\s+\d{2}:\d{2}', line)
+        if len(all_date_time_matches) >= 2:
+            arrival_date = all_date_time_matches[0] # Get the MM/DD part
+            departure_date = all_date_time_matches[1] # Get the MM/DD part
+            break # Found the group dates, stop searching
+
+    # If only one date is found, assume departure is the same as arrival (addresses 12月19日-12月19日 issue)
+    if arrival_date and not departure_date:
+        departure_date = arrival_date
 
     # --- Step 2: Extract all detailed room entries ---
     for i, line in enumerate(lines):
-        # Look for room type and number pattern (e.g., "STS 32", "JKN 50")
-        match_room = re.match(r'([A-Z]{3,4})\s+(\d+)', line)
-        if match_room:
-            current_room_type = match_room.group(1)
-            current_num_rooms = int(match_room.group(2))
+        # Use re.search and more flexible whitespace
+        # Room type and number (e.g., "STS 32", "JKN 50")
+        # Use negative lookahead to ensure the number is not part of a date/time/price (e.g., 1 from 12/19 1)
+        match_room_and_count = re.search(r'([A-Z]{3,4})\s*(\d+)\s*(?![:/.])', line)
+
+        if match_room_and_count:
+            current_room_type = match_room_and_count.group(1)
+            current_num_rooms = int(match_room_and_count.group(2))
             
-            # Now, search for the price in subsequent lines within this block.
-            # The price is a float and is usually the first token on its line (e.g., "580.00 BRK2, NSV")
-            j = i + 1
-            while j < len(lines):
-                price_match = re.match(r'^(\d+\.\d{2})', lines[j])
-                if price_match:
-                    price = float(price_match.group(1))
-                    room_details.append((current_num_rooms, current_room_type, int(price)))
-                    break
-                # Stop if we hit another team name or end of a logical block for this room type
-                if re.search(r'(CON|FIT|WA)\d+/.+', lines[j]) or "自己" in lines[j] or "团体" in lines[j]:
-                    break
-                j += 1
+            price = None
+            # First, try to find price on the same line (anywhere on the line)
+            price_match_on_line = re.search(r'(\d+\.\d{2})', line)
+            if price_match_on_line:
+                price = float(price_match_on_line.group(1))
+            
+            # If not found on same line, look in subsequent lines (starting at line start)
+            if price is None:
+                j = i + 1
+                while j < len(lines):
+                    price_match_subsequent = re.search(r'^(\d+\.\d{2})', lines[j])
+                    if price_match_subsequent:
+                        price = float(price_match_subsequent.group(1))
+                        break
+                    # Stop if we hit another team name or end of a logical block for this room type
+                    # Fixed regex for the break condition
+                    if re.search(r'(CON|FIT|WA)\d+/.+|自己|团体', lines[j]):
+                        break
+                    j += 1
+            
+            if current_num_rooms > 0 and price is not None:
+                room_details.append((current_num_rooms, current_room_type, int(price)))
 
     # --- Step 3: Determine team type based on prefix ---
     team_type = "旅游团"
