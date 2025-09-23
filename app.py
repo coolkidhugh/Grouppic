@@ -82,7 +82,7 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         st.error(f"调用 Google Cloud Vision API 失败: {e}")
         return None
 
-# --- 信息提取与格式化 (已更新) ---
+# --- 信息提取与格式化 (保持不变) ---
 def extract_booking_info(ocr_text: str):
     lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
     if not lines: return "错误：OCR 文本为空。"
@@ -92,7 +92,6 @@ def extract_booking_info(ocr_text: str):
     date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
     spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
     room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)', re.IGNORECASE)
-    # [更新] 增强价格识别规则，使其能够匹配整数和小数
     price_pattern = re.compile(r'(\d+(?:\s*\.\s*\d{2})?)') 
 
     for line in lines:
@@ -150,16 +149,17 @@ def format_notification_speech(team_name, team_type, arrival_date, departure_dat
     room_string = ("，".join(formatted_rooms[:-1]) + "，以及" + formatted_rooms[-1]) if len(formatted_rooms) > 1 else (formatted_rooms[0] if formatted_rooms else "无房间详情")
     return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
-# --- Streamlit 主应用 ---
+# --- Streamlit 主应用 (已更新工作流) ---
 st.set_page_config(layout="wide", page_title="OCR 销售通知生成器")
 
 st.title("📑 OCR 销售通知生成器")
 
 if check_password():
     st.markdown("""
-    **两步走工作流**：
-    1.  **提取信息**：上传图片，程序将调用 **Google Cloud Vision API** 识别并填充表格。
-    2.  **审核并生成**：检查并**直接在表格中修改**信息，确认无误后点击“生成最终话术”。
+    **全新工作流**：
+    1.  **上传图片，点击提取**：程序将调用 Google OCR 并将**原始识别文本**显示在下方。
+    2.  **自动填充与人工修正**：程序会尝试自动填充结构化信息。您可以**参照原始文本**，直接在表格中修改，确保信息完全准确。
+    3.  **生成话术**：确认无误后，生成最终话术。
     """)
 
     uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg"])
@@ -169,21 +169,35 @@ if check_password():
         st.image(image, caption="上传的图片", width=300)
         
         if st.button("1. 从图片提取信息 (Google Cloud OCR)"):
+            st.session_state.clear()
             with st.spinner('正在调用 Google Cloud Vision API 识别中...'):
                 ocr_text = get_ocr_text_from_google(image)
                 if ocr_text:
+                    st.session_state['raw_ocr_text'] = ocr_text
                     result = extract_booking_info(ocr_text)
                     if isinstance(result, str):
-                        st.error(result)
-                        st.session_state.clear()
+                        st.warning(f"自动解析提示：{result}")
+                        st.info("请参考下方识别出的原始文本，手动填写信息。")
+                        empty_df = pd.DataFrame(columns=['房型', '房数', '定价'])
+                        st.session_state['booking_info'] = {
+                            "team_name": "", "team_type": DEFAULT_TEAM_TYPE, 
+                            "arrival_date": "", "departure_date": "", 
+                            "room_dataframe": empty_df
+                        }
                     else:
                         st.session_state['booking_info'] = result
                         st.success("信息提取成功！请在下方核对并编辑。")
 
     if 'booking_info' in st.session_state:
         info = st.session_state['booking_info']
+        
+        if 'raw_ocr_text' in st.session_state:
+            st.markdown("---")
+            st.subheader("原始识别结果 (供参考)")
+            st.text_area("您可以从这里复制内容来修正下面的表格", st.session_state['raw_ocr_text'], height=200)
+
         st.markdown("---")
-        st.subheader("2. 核对与编辑信息")
+        st.subheader("核对与编辑信息")
         col1, col2, col3, col4 = st.columns(4)
         with col1: info['team_name'] = st.text_input("团队名称", value=info['team_name'])
         with col2: info['team_type'] = st.selectbox("团队类型", options=list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE], index=(list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE]).index(info['team_type']))
