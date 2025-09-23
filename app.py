@@ -2,31 +2,15 @@ import re
 import streamlit as st
 from PIL import Image
 import pandas as pd
-import io
-import os
+import pytesseract
 
-# --- [新功能] Google Cloud Vision API 集成 ---
-from google.cloud import vision
-
-# --- !!! 重要设置 !!! ---
-# 在运行前，你需要设置 Google Cloud 的认证密钥。
-# 1. 前往 Google Cloud Platform, 创建一个项目并启用 Vision API。
-# 2. 创建一个服务账号 (Service Account) 并下载 JSON 密钥文件。
-# 3. 将下载的 JSON 文件的完整路径替换下面的字符串。
-# 示例 (Windows): "C:\\Users\\YourUser\\Documents\\my-google-cloud-key.json"
-# 示例 (macOS/Linux): "/home/user/my-google-cloud-key.json"
-
-GOOGLE_API_KEY_PATH = "请在这里粘贴你的Google Cloud API密钥JSON文件的完整路径"
-
-# 检查密钥路径是否已设置
-if not os.path.exists(GOOGLE_API_KEY_PATH):
-    st.error("Google Cloud API 密钥路径无效！请在代码中设置正确的 GOOGLE_API_KEY_PATH。")
-    st.stop()
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_API_KEY_PATH
-# --- 设置结束 ---
+# --- Tesseract 设置 ---
+# 如果 Tesseract 没有在你的系统路径中，请取消下面的注释并设置其可执行文件路径
+# 示例 (Windows):
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 
-# --- Configuration (这部分逻辑不变) ---
+# --- 配置信息 ---
 TEAM_TYPE_MAP = {
     "CON": "会议团",
     "FIT": "散客团",
@@ -47,23 +31,9 @@ ALL_ROOM_CODES = JINLING_ROOM_CODES + APAC_ROOM_CODES
 ROOM_CODES_REGEX_PATTERN = r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'
 
 
-def perform_google_vision_ocr(image_bytes: bytes) -> str:
-    """
-    使用 Google Cloud Vision API 对给定的图片字节进行 OCR。
-    """
-    client = vision.ImageAnnotatorClient()
-    image = vision.Image(content=image_bytes)
-    
-    response = client.text_detection(image=image)
-    if response.error.message:
-        raise Exception(f"Google Vision API 错误: {response.error.message}")
-        
-    return response.full_text_annotation.text
-
-
 def extract_booking_info(ocr_text: str):
     """
-    从 OCR 文本中提取预订信息。(此函数逻辑不变)
+    从 OCR 文本中提取预订信息。
     """
     lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
     if not lines:
@@ -72,7 +42,7 @@ def extract_booking_info(ocr_text: str):
     team_name, arrival_date, departure_date = "", "", ""
     room_details = []
 
-    team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE) # [修改] 增加 re.IGNORECASE 忽略大小写
+    team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{2}/\d{2})')
     room_pattern = re.compile(ROOM_CODES_REGEX_PATTERN + r'\s*(\S+)')
     price_pattern = re.compile(r'(\d+\.\d{2})')
@@ -103,7 +73,8 @@ def extract_booking_info(ocr_text: str):
             continue
         try:
             room_type = match_room.group(1)
-            num_rooms = int(match_room.group(2))
+            num_rooms_str = match_room.group(2)
+            num_rooms = int(num_rooms_str)
         except (ValueError, IndexError):
             continue
         
@@ -130,7 +101,7 @@ def extract_booking_info(ocr_text: str):
     if not room_details:
         return f"提示：找到了团队 {team_name}，但未能识别出任何有效的房型和价格信息。"
 
-    team_prefix = team_name[:3]
+    team_prefix = team_name[:3].upper()
     team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
     room_details.sort(key=lambda x: x[1])
 
@@ -147,7 +118,7 @@ def extract_booking_info(ocr_text: str):
 
 def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df):
     """
-    根据最终确认的信息生成销售话术。(此函数逻辑不变)
+    根据最终确认的信息生成销售话术。
     """
     date_range_string = f"{arrival_date}至{departure_date}"
     
@@ -165,10 +136,10 @@ def format_notification_speech(team_name, team_type, arrival_date, departure_dat
 
 # --- Streamlit Application ---
 st.set_page_config(layout="wide")
-st.title("📑 OCR 销售通知生成器 (Google Vision API 版)")
+st.title("📑 OCR 销售通知生成器 (审核版)")
 st.markdown("""
 **两步走工作流**：
-1.  **提取信息**：上传图片，程序将调用 **Google Vision API** 识别并填充下面的表格。
+1.  **提取信息**：上传图片，程序自动识别并填充下面的表格。
 2.  **审核并生成**：检查并**直接在表格中修改**信息，确认无误后点击“生成最终话术”。
 """)
 
@@ -178,15 +149,10 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="上传的图片", width=300)
     
-    # 将图片转换为字节流以供 API 使用
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format='PNG')
-    image_bytes = img_byte_arr.getvalue()
-    
-    if st.button("1. 从图片提取信息 (Google Vision)"):
-        with st.spinner('正在调用 Google Vision API 识别中...'):
+    if st.button("1. 从图片提取信息"):
+        with st.spinner('正在使用 Tesseract 识别中...'):
             try:
-                ocr_text = perform_google_vision_ocr(image_bytes)
+                ocr_text = pytesseract.image_to_string(image, lang='chi_sim')
                 result = extract_booking_info(ocr_text)
                 
                 if isinstance(result, str):
@@ -196,7 +162,7 @@ if uploaded_file is not None:
                     st.session_state['booking_info'] = result
                     st.success("信息提取成功！请在下方核对并编辑。")
             except Exception as e:
-                st.error(f"调用 API 时发生错误: {e}")
+                st.error(f"处理时发生错误: {e}")
                 st.session_state.clear()
 
 
@@ -224,5 +190,4 @@ if 'booking_info' in st.session_state:
         st.subheader("🎉 生成成功！")
         st.success(final_speech)
         st.code(final_speech, language=None)
-
 
