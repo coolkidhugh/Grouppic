@@ -4,6 +4,7 @@ from PIL import Image
 import pandas as pd
 import io
 import base64
+import json
 
 # --- SDK 依赖 ---
 # requirements.txt 需要包含: alibabacloud_ocr_api20210707, pandas, streamlit
@@ -81,16 +82,18 @@ def get_ocr_text_from_aliyun(image: Image.Image) -> str:
         )
         client = OcrClient(config)
         
+        # [关键修复]：直接将图片的二进制流传递给API，而不是Base64编码的字符串
         buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        # 确保图片是API支持的格式之一，如PNG, JPG, BMP
+        image_format = "PNG" if image.format is None or image.format.upper() not in ["JPG", "JPEG", "BMP"] else image.format.upper()
+        if image_format == "JPEG": image_format="JPG" # API可能只认JPG
+        image.save(buffered, format=image_format)
+        buffered.seek(0)
         
-        request = ocr_models.RecognizeGeneralRequest(body=img_base64)
+        request = ocr_models.RecognizeGeneralRequest(body=buffered)
         response = client.recognize_general(request)
         
-        # 阿里云通用识别返回的是JSON字符串，我们需要提取其中的 'content'
         if response.status_code == 200 and response.body and response.body.data:
-            import json
             data = json.loads(response.body.data)
             return data.get('content', '')
         else:
@@ -117,7 +120,7 @@ def extract_booking_info(ocr_text: str):
 
     room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
     room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s*(\\d+)', re.IGNORECASE)
-    price_finder_pattern = re.compile(r'\b(\d{2,}(?:\.\d{2})?)\b') # 价格至少两位数
+    price_finder_pattern = re.compile(r'\b(\d{2,}(?:\.\d{2})?)\b')
 
     found_rooms = [(m.group(1).upper(), int(m.group(2)), m.span()) for m in room_finder_pattern.finditer(ocr_text)]
     found_prices = [(float(m.group(1)), m.span()) for m in price_finder_pattern.finditer(ocr_text)]
@@ -155,7 +158,7 @@ def extract_booking_info(ocr_text: str):
         dep_month, dep_day = map(int, departure_date.split('/'))
         formatted_arrival = f"{arr_month}月{arr_day}日"
         formatted_departure = f"{dep_month}月{dep_day}日"
-    except ValueError:
+    except (ValueError, IndexError):
         return "错误：日期格式无法解析。"
         
     df = pd.DataFrame(room_details, columns=['房型', '房数', '定价'])
@@ -180,7 +183,7 @@ if check_password():
     3.  **生成话术**：确认无误后，生成最终话术。
     """)
 
-    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg", "bmp"])
 
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
