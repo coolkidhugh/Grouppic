@@ -82,56 +82,63 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         st.error(f"调用 Google Cloud Vision API 失败: {e}")
         return None
 
-# --- 信息提取与格式化 (保持不变) ---
+# --- 信息提取与格式化 (已更新增强逻辑) ---
 def extract_booking_info(ocr_text: str):
     lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
     if not lines: return "错误：OCR 文本为空。"
     team_name, arrival_date, departure_date = "", "", ""
     room_details = []
+    
     team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
-    spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
-    room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)', re.IGNORECASE)
-    price_pattern = re.compile(r'(\d+(?:\s*\.\s*\d{2})?)') 
-
+    
     for line in lines:
         if not team_name:
             match = team_name_pattern.search(line)
             if match: team_name = match.group(0)
+            
     if not team_name: return "错误：无法识别出团队名称。"
+    
     all_dates = [d for line in lines for d in date_pattern.findall(line)]
     unique_dates = sorted(list(set(all_dates)))
     if len(unique_dates) >= 2: arrival_date, departure_date = unique_dates[0], unique_dates[1]
     elif len(unique_dates) == 1: arrival_date = departure_date = unique_dates[0]
+    
     if not arrival_date: return "错误：无法识别出有效的日期。"
-    for i, line in enumerate(lines):
+
+    spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
+    room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)', re.IGNORECASE)
+    price_finder_pattern = re.compile(r'\b(\d{3,}(?:\.\d{2})?)\b')
+
+    for line in lines:
         match_room = room_pattern.search(line)
         if not match_room: continue
+
         try:
             room_type = re.sub(r'\s+', '', match_room.group(1)).upper()
             num_rooms = int(match_room.group(2))
-        except (ValueError, IndexError): continue
+        except (ValueError, IndexError):
+            continue
+
         price = None
-        price_match = price_pattern.search(line)
-        if price_match:
-            try: price = float(re.sub(r'\s+', '', price_match.group(1)))
-            except (ValueError, IndexError): price = None
-        if price is None:
-            for j in range(i + 1, len(lines)):
-                next_line = lines[j]
-                if team_name_pattern.search(next_line) or re.search(r'自己|团体', next_line, re.IGNORECASE): break
-                price_match = price_pattern.search(next_line)
-                if price_match:
-                    try:
-                        price = float(re.sub(r'\s+', '', price_match.group(1)))
-                        break
-                    except (ValueError, IndexError): continue
-        if num_rooms > 0 and price is not None:
+        line_for_price_search = team_name_pattern.sub('', line)
+        price_candidates = price_finder_pattern.findall(line_for_price_search)
+
+        if price_candidates:
+            try:
+                price = float(price_candidates[-1])
+            except (ValueError, IndexError):
+                price = None
+
+        if num_rooms > 0 and price is not None and price > 0:
             room_details.append((room_type, num_rooms, int(price)))
+
     if not room_details: return f"提示：找到了团队 {team_name}，但未能识别出任何有效的房型和价格信息。"
+    
     team_prefix = team_name[:3].upper()
     team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
     room_details.sort(key=lambda x: x[1])
+    
     try:
         arr_month, arr_day = map(int, arrival_date.split('/'))
         dep_month, dep_day = map(int, departure_date.split('/'))
@@ -139,6 +146,7 @@ def extract_booking_info(ocr_text: str):
         formatted_departure = f"{dep_month}月{dep_day}日"
     except ValueError:
         return "错误：日期格式无法解析。"
+        
     df = pd.DataFrame(room_details, columns=['房型', '房数', '定价'])
     return {"team_name": team_name, "team_type": team_type, "arrival_date": formatted_arrival, "departure_date": formatted_departure, "room_dataframe": df}
 
