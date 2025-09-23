@@ -1,3 +1,4 @@
 streamlit
-Pillow
-pytesseract
+pandas
+google-cloud-vision
+google-auth-oauthlib
