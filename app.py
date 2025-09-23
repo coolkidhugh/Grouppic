@@ -44,7 +44,7 @@ def extract_booking_info(ocr_text: str):
 
     team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{2}/\d{2})')
-    room_pattern = re.compile(ROOM_CODES_REGEX_PATTERN + r'\s*(\S+)')
+    room_pattern = re.compile(ROOM_CODES_REGEX_PATTERN + r'\s+(\d+)') # [修改] 将 \s*(\S+) 改为 \s+(\d+)，更精确地匹配数字
     price_pattern = re.compile(r'(\d+\.\d{2})')
     
     for line in lines:
@@ -190,4 +190,5 @@ if 'booking_info' in st.session_state:
         st.subheader("🎉 生成成功！")
         st.success(final_speech)
         st.code(final_speech, language=None)
+
 
