@@ -90,15 +90,20 @@ def extract_booking_info(ocr_text: str):
     team_name, arrival_date, departure_date = "", "", ""
     room_details = []
     
-    team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE)
+    # [更新] 更强大的团队名称正则表达式，以处理 OCR 可能产生的额外空格
+    team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
     
+    found_team_name_str = ""
     for line in lines:
-        if not team_name:
+        if not found_team_name_str:
             match = team_name_pattern.search(line)
-            if match: team_name = match.group(0)
-            
-    if not team_name: return "错误：无法识别出团队名称。"
+            if match: 
+                found_team_name_str = match.group(1).strip()
+                
+    if not found_team_name_str: return "错误：无法识别出团队名称。"
+    
+    team_name = found_team_name_str
     
     all_dates = [d for line in lines for d in date_pattern.findall(line)]
     unique_dates = sorted(list(set(all_dates)))
@@ -122,11 +127,13 @@ def extract_booking_info(ocr_text: str):
             continue
 
         price = None
-        line_for_price_search = team_name_pattern.sub('', line)
+        # [更新] 替换时使用找到的特定团队名称字符串，以避免正则表达式的歧义
+        line_for_price_search = line.replace(team_name, '')
         price_candidates = price_finder_pattern.findall(line_for_price_search)
 
         if price_candidates:
             try:
+                # 价格通常是最后一个符合条件的数字
                 price = float(price_candidates[-1])
             except (ValueError, IndexError):
                 price = None
