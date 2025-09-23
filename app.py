@@ -82,11 +82,9 @@ def get_ocr_text_from_aliyun(image: Image.Image) -> str:
         )
         client = OcrClient(config)
         
-        # [关键修复]：直接将图片的二进制流传递给API，而不是Base64编码的字符串
         buffered = io.BytesIO()
-        # 确保图片是API支持的格式之一，如PNG, JPG, BMP
         image_format = "PNG" if image.format is None or image.format.upper() not in ["JPG", "JPEG", "BMP"] else image.format.upper()
-        if image_format == "JPEG": image_format="JPG" # API可能只认JPG
+        if image_format == "JPEG": image_format="JPG"
         image.save(buffered, format=image_format)
         buffered.seek(0)
         
@@ -120,7 +118,8 @@ def extract_booking_info(ocr_text: str):
 
     room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
     room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s*(\\d+)', re.IGNORECASE)
-    price_finder_pattern = re.compile(r'\b(\d{2,}(?:\.\d{2})?)\b')
+    # [关键修复] 严格匹配价格格式(xxx.xx)，避免从日期中匹配到错误数字
+    price_finder_pattern = re.compile(r'\b(\d+\.\d{2})\b')
 
     found_rooms = [(m.group(1).upper(), int(m.group(2)), m.span()) for m in room_finder_pattern.finditer(ocr_text)]
     found_prices = [(float(m.group(1)), m.span()) for m in price_finder_pattern.finditer(ocr_text)]
@@ -134,6 +133,7 @@ def extract_booking_info(ocr_text: str):
         min_distance = float('inf')
 
         for i, (price_val, price_span) in enumerate(available_prices):
+            # 寻找在房型信息之后出现的，且距离最近的价格
             if price_span[0] > room_span[1]:
                 distance = price_span[0] - room_span[1]
                 if distance < min_distance:
@@ -141,8 +141,10 @@ def extract_booking_info(ocr_text: str):
                     best_price = price_val
                     best_price_index = i
         
+        # 忽略价格为0的无效条目
         if best_price is not None and best_price > 0:
             room_details.append((room_type, num_rooms, int(best_price)))
+            # 移除已匹配的价格，避免重复使用
             if best_price_index != -1:
                 available_prices.pop(best_price_index)
 
@@ -167,8 +169,9 @@ def extract_booking_info(ocr_text: str):
 def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df):
     date_range_string = f"{arrival_date}至{departure_date}"
     room_details = room_df.to_dict('records')
-    formatted_rooms = [f"{item['房数']}间{item['房型']}({item['定价']}元)" for item in room_details]
-    room_string = ("，".join(formatted_rooms[:-1]) + "，以及" + formatted_rooms[-1]) if len(formatted_rooms) > 1 else (formatted_rooms[0] if formatted_rooms else "无房间详情")
+    # [关键修复] 按要求更新话术格式：移除“元”并用空格代替逗号
+    formatted_rooms = [f"{item['房数']}间{item['房型']}({item['定价']})" for item in room_details]
+    room_string = " ".join(formatted_rooms) if formatted_rooms else "无房间详情"
     return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
 # --- Streamlit 主应用 ---
