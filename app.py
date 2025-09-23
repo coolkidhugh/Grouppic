@@ -82,7 +82,7 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         st.error(f"调用 Google Cloud Vision API 失败: {e}")
         return None
 
-# --- 信息提取与格式化 (保持不变) ---
+# --- 信息提取与格式化 (已更新) ---
 def extract_booking_info(ocr_text: str):
     lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
     if not lines: return "错误：OCR 文本为空。"
@@ -92,7 +92,9 @@ def extract_booking_info(ocr_text: str):
     date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
     spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
     room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)', re.IGNORECASE)
-    price_pattern = re.compile(r'(\d+\s*\.\s*\d{2})')
+    # [更新] 增强价格识别规则，使其能够匹配整数和小数
+    price_pattern = re.compile(r'(\d+(?:\s*\.\s*\d{2})?)') 
+
     for line in lines:
         if not team_name:
             match = team_name_pattern.search(line)
