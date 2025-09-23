@@ -59,7 +59,7 @@ def check_password():
         st.error("😕 用户名或密码不正确。")
     return False
 
-# --- OCR 引擎函数 (保持不变) ---
+# --- OCR 引擎函数 (已更新为文档模式) ---
 def get_ocr_text_from_google(image: Image.Image) -> str:
     if not GOOGLE_SDK_AVAILABLE:
         st.error("错误：Google SDK 未安装。请确保 requirements.txt 文件配置正确。")
@@ -75,7 +75,8 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         image.save(buffered, format="PNG")
         content = buffered.getvalue()
         image_for_api = vision.Image(content=content)
-        response = client.text_detection(image=image_for_api)
+        # [更新] 使用 document_text_detection 以获得更适合表格的结构化文本
+        response = client.document_text_detection(image=image_for_api)
         if response.error.message: raise Exception(f"{response.error.message}")
         return response.full_text_annotation.text
     except Exception as e:
