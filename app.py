@@ -46,7 +46,6 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    # 检查 Secrets 是否已配置
     if not st.secrets.get("app_credentials", {}).get("username") or not st.secrets.get("app_credentials", {}).get("password"):
         st.error("错误：应用用户名和密码未在 Streamlit Secrets 中配置。")
         return False
@@ -75,7 +74,6 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         image.save(buffered, format="PNG")
         content = buffered.getvalue()
         image_for_api = vision.Image(content=content)
-        # [更新] 使用 document_text_detection 以获得更适合表格的结构化文本
         response = client.document_text_detection(image=image_for_api)
         if response.error.message: raise Exception(f"{response.error.message}")
         return response.full_text_annotation.text
@@ -83,69 +81,68 @@ def get_ocr_text_from_google(image: Image.Image) -> str:
         st.error(f"调用 Google Cloud Vision API 失败: {e}")
         return None
 
-# --- 信息提取与格式化 (已更新增强逻辑) ---
+# --- [全新重构] 信息提取与格式化 ---
 def extract_booking_info(ocr_text: str):
-    lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
-    if not lines: return "错误：OCR 文本为空。"
-    team_name, arrival_date, departure_date = "", "", ""
-    room_details = []
-    
-    # [更新] 更强大的团队名称正则表达式，以处理 OCR 可能产生的额外空格
+    """
+    使用全新的、更健壮的启发式逻辑从 OCR 文本中提取信息。
+    它不再依赖于严格的行格式，而是查找关键字并根据它们在文本中的邻近度进行关联。
+    """
     team_name_pattern = re.compile(r'((?:CON|FIT|WA)\d+\s*/\s*[\u4e00-\u9fa5\w]+)', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{1,2}/\d{1,2})')
     
-    found_team_name_str = ""
-    for line in lines:
-        if not found_team_name_str:
-            match = team_name_pattern.search(line)
-            if match: 
-                found_team_name_str = match.group(1).strip()
-                
-    if not found_team_name_str: return "错误：无法识别出团队名称。"
-    
-    team_name = found_team_name_str
-    
-    all_dates = [d for line in lines for d in date_pattern.findall(line)]
-    unique_dates = sorted(list(set(all_dates)))
-    if len(unique_dates) >= 2: arrival_date, departure_date = unique_dates[0], unique_dates[1]
-    elif len(unique_dates) == 1: arrival_date = departure_date = unique_dates[0]
-    
-    if not arrival_date: return "错误：无法识别出有效的日期。"
+    # 1. 提取基本信息（团队名称和日期）
+    team_name_match = team_name_pattern.search(ocr_text)
+    if not team_name_match: return "错误：无法识别出团队名称。"
+    team_name = re.sub(r'\s*/\s*', '/', team_name_match.group(1).strip())
 
-    spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
-    room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)', re.IGNORECASE)
+    all_dates = date_pattern.findall(ocr_text)
+    unique_dates = sorted(list(set(all_dates)))
+    if not unique_dates: return "错误：无法识别出有效的日期。"
+    arrival_date = unique_dates[0]
+    departure_date = unique_dates[-1] # 取第一个和最后一个作为到达和离开日期
+
+    # 2. 找出所有可能的“线索”（房型+房数，以及价格）
+    room_codes_pattern_str = '|'.join(ALL_ROOM_CODES)
+    # 这个模式寻找一个房型代码，后面紧跟着一个数字
+    room_finder_pattern = re.compile(f'({room_codes_pattern_str})\\s*(\\d+)', re.IGNORECASE)
+    # 这个模式寻找所有看起来像价格的数字（3位或更多，可选小数）
     price_finder_pattern = re.compile(r'\b(\d{3,}(?:\.\d{2})?)\b')
 
-    for line in lines:
-        match_room = room_pattern.search(line)
-        if not match_room: continue
-
-        try:
-            room_type = re.sub(r'\s+', '', match_room.group(1)).upper()
-            num_rooms = int(match_room.group(2))
-        except (ValueError, IndexError):
-            continue
-
-        price = None
-        # [更新] 替换时使用找到的特定团队名称字符串，以避免正则表达式的歧义
-        line_for_price_search = line.replace(team_name, '')
-        price_candidates = price_finder_pattern.findall(line_for_price_search)
-
-        if price_candidates:
-            try:
-                # 价格通常是最后一个符合条件的数字
-                price = float(price_candidates[-1])
-            except (ValueError, IndexError):
-                price = None
-
-        if num_rooms > 0 and price is not None and price > 0:
-            room_details.append((room_type, num_rooms, int(price)))
-
-    if not room_details: return f"提示：找到了团队 {team_name}，但未能识别出任何有效的房型和价格信息。"
+    # 找到所有线索及其在文本中的位置
+    found_rooms = [(m.group(1).upper(), int(m.group(2)), m.span()) for m in room_finder_pattern.finditer(ocr_text)]
+    found_prices = [(float(m.group(1)), m.span()) for m in price_finder_pattern.finditer(ocr_text)]
     
+    # 3. 智能关联：为每个房型找到最匹配的价格
+    room_details = []
+    available_prices = list(found_prices)
+
+    for room_type, num_rooms, room_span in found_rooms:
+        best_price = None
+        best_price_index = -1
+        min_distance = float('inf')
+
+        # 寻找距离最近的、尚未被匹配的价格
+        for i, (price_val, price_span) in enumerate(available_prices):
+            # 价格必须出现在房型之后
+            if price_span[0] > room_span[1]:
+                distance = price_span[0] - room_span[1]
+                if distance < min_distance:
+                    min_distance = distance
+                    best_price = price_val
+                    best_price_index = i
+        
+        # 如果找到了匹配的价格，就记录下来，并从可用价格中移除
+        if best_price is not None and best_price > 0:
+            room_details.append((room_type, num_rooms, int(best_price)))
+            available_prices.pop(best_price_index)
+
+    if not room_details:
+        return f"提示：找到了团队 {team_name}，但未能自动匹配任何有效的房型和价格。请检查原始文本并手动填写。"
+
+    # 4. 格式化并返回结果
     team_prefix = team_name[:3].upper()
     team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
-    room_details.sort(key=lambda x: x[1])
+    room_details.sort(key=lambda x: x[1]) # 按房数排序
     
     try:
         arr_month, arr_day = map(int, arrival_date.split('/'))
@@ -165,9 +162,8 @@ def format_notification_speech(team_name, team_type, arrival_date, departure_dat
     room_string = ("，".join(formatted_rooms[:-1]) + "，以及" + formatted_rooms[-1]) if len(formatted_rooms) > 1 else (formatted_rooms[0] if formatted_rooms else "无房间详情")
     return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
 
-# --- Streamlit 主应用 (已更新工作流) ---
+# --- Streamlit 主应用 ---
 st.set_page_config(layout="wide", page_title="OCR 销售通知生成器")
-
 st.title("📑 OCR 销售通知生成器")
 
 if check_password():
