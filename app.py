@@ -43,8 +43,12 @@ def extract_booking_info(ocr_text: str):
 
     team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+', re.IGNORECASE)
     date_pattern = re.compile(r'(\d{2}/\d{2})')
-    # [修改] 升级房型识别规则，允许房型和房数之间没有空格，提高容错性
-    room_pattern = re.compile(r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\s*(\d+)')
+    
+    # [新修改] 创建一个更能抵抗OCR错误的房型正则表达式
+    # 允许房型代码的字母之间存在空格 (例如 D S K N)
+    spaced_room_codes = [r'\s*'.join(list(code)) for code in ALL_ROOM_CODES]
+    # [修改] 使用新的、更强大的正则表达式，并去掉\b以提高匹配灵活性
+    room_pattern = re.compile(r'(' + '|'.join(spaced_room_codes) + r')\s*(\d+)')
     price_pattern = re.compile(r'(\d+\.\d{2})')
     
     for line in lines:
@@ -72,7 +76,10 @@ def extract_booking_info(ocr_text: str):
         if not match_room:
             continue
         try:
-            room_type = match_room.group(1)
+            # [修改] 从匹配到的房型中移除所有空格，将其标准化
+            room_type_with_spaces = match_room.group(1)
+            room_type = re.sub(r'\s+', '', room_type_with_spaces)
+
             num_rooms_str = match_room.group(2)
             num_rooms = int(num_rooms_str)
         except (ValueError, IndexError):
