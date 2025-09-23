@@ -16,13 +16,11 @@ TEAM_TYPE_MAP = {
 }
 DEFAULT_TEAM_TYPE = "旅游团"
 
-# [规则更新] 房型代码“白名单”，只识别列表中的代码
 JINLING_ROOM_CODES = [
     "DETN", "DKN", "DQN", "DSKN", "DSTN", "DTN", "EKN", "EKS", "ESN", "ESS",
     "ETN", "ETS", "FSN", "FSB", "FSC", "OTN", "PSA", "PSB", "RSN", "SKN",
     "SQN", "SQS", "SSN", "SSS", "STN", "STS"
 ]
-# [更新] 根据用户提供的图片示例，添加了几个新的房型代码
 APAC_ROOM_CODES = [
     "JDEN", "JDKN", "JDKS", "JEKN", "JESN", "JESS", "JETN", "JETS", "JKN",
     "JLKN", "JTN", "JTS", "PSC", "PSD", "VCKN", "VCKD", "SITN", "JEN", "JIS", "JTIN"
@@ -30,24 +28,15 @@ APAC_ROOM_CODES = [
 ALL_ROOM_CODES = JINLING_ROOM_CODES + APAC_ROOM_CODES
 ROOM_CODES_REGEX_PATTERN = r'\b(' + '|'.join(ALL_ROOM_CODES) + r')\b'
 
-
-def generate_sales_notification(ocr_text: str):
+def extract_booking_info(ocr_text: str):
     """
-    根据 OCR 文本提取预订信息，并以结构化数据返回 (v4 - 表格输出版)。
-
-    Args:
-        ocr_text: 包含团队预订信息的 OCR 文本。
-
-    Returns:
-        包含预订详情的字典，或错误提示字符串。
+    从 OCR 文本中提取预订信息。
     """
     lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
     if not lines:
         return "错误：OCR 文本为空。"
 
-    team_name = ""
-    arrival_date = ""
-    departure_date = ""
+    team_name, arrival_date, departure_date = "", "", ""
     room_details = []
 
     team_name_pattern = re.compile(r'(CON|FIT|WA)\d+/[^\s]+')
@@ -55,16 +44,14 @@ def generate_sales_notification(ocr_text: str):
     room_pattern = re.compile(ROOM_CODES_REGEX_PATTERN + r'\s*(\S+)')
     price_pattern = re.compile(r'(\d+\.\d{2})')
     
-    # 1. 提取团队名称
     for line in lines:
-        match = team_name_pattern.search(line)
-        if match:
-            team_name = match.group(0)
-            break
+        if not team_name:
+            match = team_name_pattern.search(line)
+            if match:
+                team_name = match.group(0)
     if not team_name:
-        return "错误：无法从文本中识别出团队名称。"
+        return "错误：无法识别出团队名称。"
 
-    # 2. 提取日期
     all_dates = []
     for line in lines:
         all_dates.extend(date_pattern.findall(line))
@@ -75,103 +62,125 @@ def generate_sales_notification(ocr_text: str):
     elif len(unique_dates) == 1:
         arrival_date = departure_date = unique_dates[0]
     if not arrival_date:
-        return "错误：无法从文本中识别出有效的日期。"
+        return "错误：无法识别出有效的日期。"
 
-    # 3. 提取房型、数量和价格
     for i, line in enumerate(lines):
         match_room = room_pattern.search(line)
         if not match_room:
             continue
-            
         try:
             room_type = match_room.group(1)
             num_rooms = int(match_room.group(2))
         except (ValueError, IndexError):
             continue
-
+        
         price = None
         price_match = price_pattern.search(line)
         if price_match:
-            try:
-                price = float(price_match.group(1))
-            except (ValueError, IndexError):
-                price = None
+            try: price = float(price_match.group(1))
+            except (ValueError, IndexError): price = None
         
         if price is None:
             for j in range(i + 1, len(lines)):
                 next_line = lines[j]
-                if team_name_pattern.search(next_line) or re.search(r'自己|团体', next_line):
-                    break
+                if team_name_pattern.search(next_line) or re.search(r'自己|团体', next_line): break
                 price_match = price_pattern.search(next_line)
                 if price_match:
                     try:
                         price = float(price_match.group(1))
                         break
-                    except (ValueError, IndexError):
-                        continue
+                    except (ValueError, IndexError): continue
         
         if num_rooms > 0 and price is not None:
             room_details.append((room_type, num_rooms, int(price)))
 
     if not room_details:
-        return f"提示：找到了团队 {team_name}，但未能根据规则识别出任何有效的房型和价格信息。"
+        return f"提示：找到了团队 {team_name}，但未能识别出任何有效的房型和价格信息。"
 
-    # 4. 格式化输出
     team_prefix = team_name[:3]
     team_type = TEAM_TYPE_MAP.get(team_prefix, DEFAULT_TEAM_TYPE)
-    room_details.sort(key=lambda x: x[1]) # 按房数排序
+    room_details.sort(key=lambda x: x[1])
 
     formatted_arrival = f"{int(arrival_date.split('/')[0])}月{int(arrival_date.split('/')[1])}日"
     formatted_departure = f"{int(departure_date.split('/')[0])}月{int(departure_date.split('/')[1])}日"
-    date_range_string = f"{formatted_arrival} 至 {formatted_departure}"
     
-    # [新功能] 将房间详情转换为 DataFrame 以便表格显示
     df = pd.DataFrame(room_details, columns=['房型', '房数', '定价'])
     
-    # 5. 返回结构化数据
     return {
-        "team_name": team_name,
-        "team_type": team_type,
-        "date_range": date_range_string,
+        "team_name": team_name, "team_type": team_type,
+        "arrival_date": formatted_arrival, "departure_date": formatted_departure,
         "room_dataframe": df
     }
 
-# --- Streamlit Application (UI 更新为表格显示) ---
+def format_notification_speech(team_name, team_type, arrival_date, departure_date, room_df):
+    """
+    根据最终确认的信息生成销售话术。
+    """
+    date_range_string = f"{arrival_date}至{departure_date}"
+    
+    # 将 DataFrame 转换为话术需要的字符串
+    room_details = room_df.to_dict('records')
+    formatted_rooms = [f"{item['房数']} {item['房型']} ({item['定价']})" for item in room_details]
+    
+    if len(formatted_rooms) > 1:
+        room_string = "，".join(formatted_rooms[:-1]) + "，以及" + formatted_rooms[-1]
+    elif formatted_rooms:
+        room_string = formatted_rooms[0]
+    else:
+        room_string = "无房间详情"
+
+    return f"新增{team_type} {team_name} {date_range_string} {room_string}。销售通知"
+
+# --- Streamlit Application ---
 st.set_page_config(layout="wide")
-st.title("📑 OCR 销售通知生成器 (表格版)")
+st.title("📑 OCR 销售通知生成器 (审核版)")
 st.markdown("""
-上传预订信息图片，程序将自动识别并提取关键信息，以清晰的摘要和表格形式呈现。
+**两步走工作流**：
+1.  **提取信息**：上传图片，程序自动识别并填充下面的表格。
+2.  **审核并生成**：检查并**直接在表格中修改**信息，确认无误后点击“生成最终话术”。
 """)
 
 uploaded_file = st.file_uploader("上传图片文件", type=["png", "jpg", "jpeg"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    st.subheader("原始图片:")
-    st.image(image, caption="上传的图片", use_container_width=True)
-
+    st.image(image, caption="上传的图片", width=300)
+    
     ocr_text = pytesseract.image_to_string(image, lang='chi_sim')
     
-    st.subheader("OCR 识别出的文本:")
-    st.text_area("OCR 内容", ocr_text, height=200)
-
-    if st.button("生成销售通知"):
-        if ocr_text.strip():
-            result = generate_sales_notification(ocr_text)
-            
+    if st.button("1. 从图片提取信息"):
+        with st.spinner('正在识别中...'):
+            result = extract_booking_info(ocr_text)
             if isinstance(result, str):
-                st.warning(result)
+                st.error(result)
+                st.session_state.clear()
             else:
-                st.subheader("✅ 预订信息提取成功")
-                st.info(f"**团队名称**: {result['team_name']}\n\n"
-                        f"**团队类型**: {result['team_type']}\n\n"
-                        f"**入住时段**: {result['date_range']}")
-                
-                st.markdown("---")
-                st.markdown("#### 房间预订详情")
-                st.dataframe(result['room_dataframe'], use_container_width=True)
-        else:
-            st.warning("OCR 识别文本内容为空，请检查图片质量或尝试手动输入。")
-else:
-    st.info("请上传一个图片文件来开始。")
+                st.session_state['booking_info'] = result
+                st.success("信息提取成功！请在下方核对并编辑。")
+
+if 'booking_info' in st.session_state:
+    info = st.session_state['booking_info']
+    st.markdown("---")
+    st.subheader("2. 核对与编辑信息")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        info['team_name'] = st.text_input("团队名称", value=info['team_name'])
+    with col2:
+        info['team_type'] = st.selectbox("团队类型", options=list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE], index=(list(TEAM_TYPE_MAP.values()) + [DEFAULT_TEAM_TYPE]).index(info['team_type']))
+    with col3:
+        arrival = st.text_input("到达日期", value=info['arrival_date'])
+        departure = st.text_input("离开日期", value=info['departure_date'])
+
+    st.markdown("##### 房间详情 (可直接在表格中编辑)")
+    # 使用 st.data_editor 使表格可编辑
+    edited_df = st.data_editor(info['room_dataframe'], num_rows="dynamic", use_container_width=True)
+
+    if st.button("✅ 生成最终话术"):
+        final_speech = format_notification_speech(
+            info['team_name'], info['team_type'], arrival, departure, edited_df
+        )
+        st.subheader("🎉 生成成功！")
+        st.success(final_speech)
+        st.code(final_speech, language=None)
 
